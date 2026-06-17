@@ -14,6 +14,12 @@ const Allocator = std.mem.Allocator;
 
 const Io = std.Io;
 
+// VENDOR PATCH (see CHANGES.md): bounded-poll slice for `acquire`. Zig 0.16's
+// `Io.Condition` has no timed wait, so a saturated acquirer sleeps in short
+// slices (re-checking the predicate each wake) instead of blocking forever.
+// ~2ms keeps wakeup latency low without busy-spinning.
+const POOL_ACQUIRE_POLL_NS: u64 = 2 * std.time.ns_per_ms;
+
 pub const Pool = struct {
     _io: Io,
     _opts: Opts,
@@ -126,14 +132,10 @@ pub const Pool = struct {
     pub fn acquire(self: *Pool) !*Conn {
         const conns = self._conns;
         const io = self._io;
-        const deadline = @as(i64, @intCast(self._timeout));
-        const start = std.Io.Timestamp.now(io, .awake);
+        var waited_ns: u64 = 0;
 
         try self._mutex.lock(io);
         errdefer self._mutex.unlock(io);
-
-        const SelectResult = union(enum) { t: Io.Cancelable!void, c: Io.Cancelable!void };
-        var select_buf: [1]SelectResult = undefined;
 
         while (true) {
             const available = self._available;
@@ -148,21 +150,29 @@ pub const Pool = struct {
 
                 lib.metrics.poolEmpty();
 
-                // Calculate remaining timeout
-                const now = std.Io.Timestamp.now(io, .awake);
-                const elapsed = start.durationTo(now).toNanoseconds();
-                if (elapsed >= deadline) {
+                // VENDOR PATCH (see vendor/pg/CHANGES.md): upstream bounded this
+                // wait with `Io.Select.concurrent(Io.sleep, Io.Condition.wait)`,
+                // which returns `error.ConcurrencyUnavailable` on this project's
+                // threaded `Io`, and `Io.Condition` has no timed wait either. So
+                // poll: drop the lock, sleep a short slice (capped by the remaining
+                // `_timeout` budget), re-take, and let the loop re-check. Bounds the
+                // wait by `_timeout` (slices summed — no `Io` wall-clock needed) and
+                // returns `error.Timeout` instead of blocking forever when a
+                // connection is leaked or a query wedges. `release()` still signals
+                // `_cond` (inert while polling) so a real timed wait can be restored
+                // verbatim once an `Io` exposes one.
+                if (waited_ns >= self._timeout) return error.Timeout;
+                const slice_ns = @min(POOL_ACQUIRE_POLL_NS, self._timeout - waited_ns);
+                self._mutex.unlock(io);
+                Io.sleep(io, .fromNanoseconds(slice_ns), .awake) catch {
+                    // Cancellation (shutdown) aborts the acquire — re-lock to honor the
+                    // errdefer's held-mutex contract, then surface the timeout immediately
+                    // so in-flight acquirers drain on shutdown instead of polling to _timeout.
+                    self._mutex.lockUncancelable(io);
                     return error.Timeout;
-                }
-
-                const remaining_ns = deadline - elapsed;
-
-                var select: Io.Select(SelectResult) = .init(io, &select_buf);
-                defer select.cancelDiscard();
-                try select.concurrent(.t, Io.sleep, .{ io, .fromNanoseconds(remaining_ns), .awake });
-                try select.concurrent(.c, Io.Condition.wait, .{ &self._cond, io, &self._mutex });
-
-                _ = try select.await();
+                };
+                waited_ns += slice_ns;
+                self._mutex.lockUncancelable(io);
                 continue;
             }
 
