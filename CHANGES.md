@@ -1,7 +1,7 @@
 # Vendored fork of karlseguin/pg.zig
 
 Upstream: https://github.com/karlseguin/pg.zig
-Vendored at commit `1aa3e3c790b6f7fe7ad76052728db3198069d3eb` (ref `master`).
+Vendored at commit `52b9f8a59bfd60a3aa75943a14366d859ea11f26` (ref `master`).
 
 This is a verbatim copy of upstream plus the single patch below. Drop this vendor
 copy and re-pin to a tagged upstream release once upstream supports a timed
