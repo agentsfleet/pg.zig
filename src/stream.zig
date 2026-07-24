@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const lib = @import("lib.zig");
 
 const openssl = lib.openssl;
@@ -102,8 +103,8 @@ const TLSStream = struct {
         self.stream.close(self.io);
     }
 
-    pub fn shutdown(self: *const Stream, how: ShutdownHow) !void {
-        return sockShutdown(self.stream.socket.handle, how);
+    pub fn shutdown(self: *const Stream, how: Io.net.ShutdownHow) !void {
+        return self.stream.shutdown(self.io, how);
     }
 
     pub fn writeAll(self: *Stream, data: []const u8) !void {
@@ -169,9 +170,8 @@ const PlainStream = struct {
         self.stream.close(self.io);
     }
 
-    pub fn shutdown(self: *const PlainStream, how: ShutdownHow) !void {
-        const sock = self.stream.socket.handle;
-        return sockShutdown(sock, how);
+    pub fn shutdown(self: *const PlainStream, how: Io.net.ShutdownHow) !void {
+        return self.stream.shutdown(self.io, how);
     }
 
     pub fn writeAll(self: *const PlainStream, data: []const u8) !void {
@@ -240,68 +240,63 @@ fn setsockopt(fd: posix.socket_t, level: i32, optname: u32, opt: []const u8) !vo
         opt_ptr = @ptrCast(&ms_buf);
         opt_len = @sizeOf(u32);
     }
-    const rc = windows.ws2_32.setsockopt(fd, level, @intCast(optname), opt_ptr, opt_len);
-    if (rc == windows.ws2_32.SOCKET_ERROR) {
-        switch (windows.ws2_32.WSAGetLastError()) {
-            .WSANOTINITIALISED => unreachable,
-            .WSAENETDOWN => return error.NetworkSubsystemFailed,
-            .WSAEFAULT => unreachable,
-            .WSAENOTSOCK => return error.FileDescriptorNotASocket,
-            .WSAEINVAL => return error.SocketNotBound,
-            else => |err| return windows.unexpectedWSAError(err),
-        }
+
+    const in: []const u8 = @ptrCast(&std.os.windows.AFD.SOCKOPT_INFO{
+        .mode = .set,
+        .level = level,
+        .optname = optname,
+        .optval = opt_ptr,
+        .optlen = @intCast(opt_len),
+    });
+
+    var iosb: std.os.windows.IO_STATUS_BLOCK = undefined;
+    switch (std.os.windows.ntdll.NtDeviceIoControlFile(
+        fd,
+        null, // event
+        null, // APC routine
+        null, // APC context
+        &iosb,
+        std.os.windows.IOCTL.AFD.SOCKOPT,
+        if (in.len > 0) in.ptr else null,
+        @intCast(in.len),
+        null,
+        0,
+    )) {
+        .SUCCESS => return,
+        .CANCELLED => return error.Canceled,
+        .INSUFFICIENT_RESOURCES => return error.SystemResources,
+        else => |status| return std.os.windows.unexpectedStatus(status),
     }
 }
 
-const ShutdownHow = enum { recv, send, both };
-fn sockShutdown(sock: posix.socket_t, how: ShutdownHow) !void {
-    if (comptime @import("builtin").os.tag == .windows) {
-        const result = windows.ws2_32.shutdown(sock, switch (how) {
-            .recv => windows.ws2_32.SD_RECEIVE,
-            .send => windows.ws2_32.SD_SEND,
-            .both => windows.ws2_32.SD_BOTH,
-        });
-        if (0 != result) switch (windows.ws2_32.WSAGetLastError()) {
-            .WSAECONNABORTED => return error.ConnectionAborted,
-            .WSAECONNRESET => return error.ConnectionResetByPeer,
-            .WSAEINPROGRESS => return error.BlockingOperationInProgress,
-            .WSAEINVAL => unreachable,
-            .WSAENETDOWN => return error.NetworkSubsystemFailed,
-            .WSAENOTCONN => return error.SocketNotConnected,
-            .WSAENOTSOCK => unreachable,
-            .WSANOTINITIALISED => unreachable,
-            else => |err| return windows.unexpectedWSAError(err),
-        };
-    } else {
-        const rc = posix.system.shutdown(sock, switch (how) {
-            .recv => posix.system.SHUT.RD,
-            .send => posix.system.SHUT.WR,
-            .both => posix.system.SHUT.RDWR,
-        });
-        switch (posix.errno(rc)) {
-            .SUCCESS => return,
-            .BADF => unreachable,
-            .INVAL => unreachable,
-            .NOTCONN => return error.SocketNotConnected,
-            .NOTSOCK => unreachable,
-            .NOBUFS => return error.SystemResources,
-            else => return error.Unexpected,
-        }
-    }
-}
 fn readStream(stream: Io.net.Stream, io: Io, buf: []u8) !usize {
     var vecs: [1][]u8 = .{buf};
     var reader = stream.reader(io, &.{});
     const r = &reader.interface;
-    return try r.readVec(&vecs);
+    return r.readVec(&vecs) catch |err| switch (err) {
+        error.ReadFailed => return reader.err orelse err,
+        else => return err,
+    };
 }
 
 fn writeStream(stream: Io.net.Stream, io: Io, data: []const u8) !void {
     var buf: [1024]u8 = undefined;
     var writer = stream.writer(io, &buf);
     const w = &writer.interface;
-    try w.writeAll(data);
-    try w.flush();
+    w.writeAll(data) catch |err| switch (err) {
+        error.WriteFailed => return writer.err orelse err,
+    };
+    w.flush() catch |err| switch (err) {
+        error.WriteFailed => return writer.err orelse err,
+    };
+}
+
+// Sends a best-effort Terminate ('X') message, shielded from cancellation so
+// teardown can't be interrupted.
+pub fn sendTerminate(stream: *Stream, io: Io) void {
+    const prev = io.swapCancelProtection(.blocked);
+    defer _ = io.swapCancelProtection(prev);
+    stream.writeAll(&.{ 'X', 0, 0, 0, 4 }) catch {};
 }
 
 fn isHostName(host: []const u8) bool {

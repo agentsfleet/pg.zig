@@ -14,6 +14,7 @@ pub const Conn = @import("conn.zig").Conn;
 pub const Stmt = @import("stmt.zig").Stmt;
 pub const Pool = @import("pool.zig").Pool;
 pub const Stream = @import("stream.zig").Stream;
+pub const sendTerminate = @import("stream.zig").sendTerminate;
 pub const metrics = @import("metrics.zig");
 pub const has_openssl = build_config.openssl;
 pub const SSLCtx = if (has_openssl) openssl.SSL_CTX else void;
@@ -177,9 +178,6 @@ pub fn parseOpts(uri: std.Uri, allocator: std.mem.Allocator) !ParsedOpts {
     const host = if (uri.host) |host| try host.toRawMaybeAlloc(aa) else null;
     const username = if (uri.user) |user| try user.toRawMaybeAlloc(aa) else "postgres";
     const password = if (uri.password) |password| try password.toRawMaybeAlloc(aa) else null;
-
-    // don't use `aa` after this point, we're about to copy `arena` and any usage
-    // of `aa` will leak
 
     return .{ .arena = arena, .opts = .{
         .size = 0,
