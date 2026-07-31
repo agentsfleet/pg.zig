@@ -3,9 +3,10 @@
 Upstream: https://github.com/karlseguin/pg.zig
 Vendored at commit `52b9f8a59bfd60a3aa75943a14366d859ea11f26` (ref `master`).
 
-This is a verbatim copy of upstream plus the single patch below. Drop this vendor
-copy and re-pin to a tagged upstream release once upstream supports a timed
-connection-pool wait on a threaded `std.Io`.
+This is a verbatim copy of upstream plus the code patch below and the dependency
+divergence noted after it. Drop this vendor copy and re-pin to a tagged upstream
+release once upstream supports a timed connection-pool wait on a threaded
+`std.Io`.
 
 ## Patch: pool-acquire wait works on the threaded `Io` (`src/pool.zig`)
 
@@ -40,3 +41,19 @@ Both are acceptable for a pool acquire; a wedged query is additionally bounded b
 connection-level statement/read timeouts.
 
 Only `Pool.acquire()` is changed; the rest of the library is upstream-verbatim.
+
+## Dependency divergence: `translate-c` is fetched from GitHub, not codeberg
+
+Upstream declares `translate_c` at `git+https://codeberg.org/ziglang/translate-c`.
+Codeberg sheds load by refusing anonymous git clones (`remote: Bye`, HTTP 403)
+while its web tier stays up, which takes down every downstream Zig build at the
+dependency fetch — before a line compiles, and with no retry that can help.
+
+This fork points the same commit (`57c559cf`) at `github.com/ziglang/translate-c`,
+which carries it. The change is provably content-neutral: Zig's package hash is
+content-addressed and is byte-identical from either forge —
+`translate_c-0.0.0-Q_BUWlX1BgCD1wo6uo97prlp9VJ4gxAjwN_vZ7nsSjGN`. If the mirror
+ever diverged, the hash would change and the build would refuse it.
+
+Revert this the moment upstream moves off codeberg, or if codeberg becomes the
+more reliable host.
