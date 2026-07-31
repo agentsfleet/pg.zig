@@ -57,3 +57,33 @@ ever diverged, the hash would change and the build would refuse it.
 
 Revert this the moment upstream moves off codeberg, or if codeberg becomes the
 more reliable host.
+
+## Consuming this fork: tag **and** commit, never the ref alone
+
+agentsfleetd pins this fork by tag *plus* explicit commit:
+
+```
+git+https://github.com/agentsfleet/pg.zig.git?ref=v0.0.0-af.3#<commit>
+```
+
+The `#<commit>` is load-bearing. `zig fetch` given `?ref=<tag>` **with no
+commit** resolved to `52b9f8a` — the upstream base this fork sits on — rather
+than the tagged commit. That silently yields plain upstream: no pool-acquire
+patch, no `CHANGES.md`, `translate_c` back on codeberg. It reproduced for every
+ref tried, tag and branch alike, once the bad resolution was cached; annotated
+vs lightweight tags made no difference.
+
+Two consequences worth keeping:
+
+- **Always pin `?ref=<tag>#<commit>`.** `zig fetch --save` writes this form
+  itself when handed a commit; hand it one.
+- **The package hash is the backstop.** A wrong resolution changes the hash, so
+  a mis-pin fails the build rather than shipping a silently unpatched pool. Do
+  not paper over an unexpected hash change — check what was actually fetched
+  (`grep POOL_ACQUIRE_POLL_NS src/pool.zig` is the quickest tell).
+
+## Tagging
+
+Every commit agentsfleetd consumes gets a tag, `v0.0.0-af.N`, incrementing.
+`af.1` is the original pool-acquire patch; `af.2` the 2026-07-24 upstream merge
+(tagged retroactively — it shipped untagged); `af.3` the translate-c mirror.
