@@ -13,7 +13,7 @@
             .hash = "metrics-0.0.0-W7G4eIegAQD4XxA9Co7Atbw59u_2zvxYf406AZuoAHPM",
         },
         .translate_c = .{
-            .url = "git+https://codeberg.org/ziglang/translate-c#57c559cf581b1fcad90494eda219f98abeb155ce",
+            .url = "git+https://github.com/ziglang/translate-c#57c559cf581b1fcad90494eda219f98abeb155ce",
             .hash = "translate_c-0.0.0-Q_BUWlX1BgCD1wo6uo97prlp9VJ4gxAjwN_vZ7nsSjGN",
         },
     },
