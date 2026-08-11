@@ -477,8 +477,15 @@ pub const Conn = struct {
     // Should not be called directly
     pub fn peekForError(self: *Conn) !void {
         const data = (try self._reader.peekForError()) orelse return;
+        // setErr must run BEFORE readyForQuery: data borrows the reader's
+        // buffer, and when the ErrorResponse was the last buffered message the
+        // reader has already reset its positions to 0 — the socket read inside
+        // readyForQuery then lands at buf[0..], overwriting the peeked bytes
+        // before setErr can dupe them (the first field byte becomes the 'Z'
+        // frame's transaction-state byte, and Error.parse panics on it).
+        const pg_err = self.setErr(data);
         try self.readyForQuery();
-        return self.setErr(data);
+        return pg_err;
     }
 
     // Should not be called directly

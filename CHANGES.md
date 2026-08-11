@@ -1,7 +1,7 @@
 # Vendored fork of karlseguin/pg.zig
 
 Upstream: https://github.com/karlseguin/pg.zig
-Vendored at commit `52b9f8a59bfd60a3aa75943a14366d859ea11f26` (ref `master`).
+Vendored at commit `b5a1f25acb8d8008c6b15eb68386e16e624c34f7` (ref `master`).
 
 This is a verbatim copy of upstream plus the code patch below and the dependency
 divergence noted after it. Drop this vendor copy and re-pin to a tagged upstream
@@ -40,7 +40,33 @@ re-checking), so the effective deadline is `_timeout` rounded up by at most one 
 Both are acceptable for a pool acquire; a wedged query is additionally bounded by the
 connection-level statement/read timeouts.
 
-Only `Pool.acquire()` is changed; the rest of the library is upstream-verbatim.
+Only `Pool.acquire()` and `Conn.peekForError()` (next section) are changed; the
+rest of the library is upstream-verbatim.
+
+## Patch: `peekForError` dupes the error before the reader buffer is reused (`src/conn.zig`)
+
+**Symptom.** agentsfleetd's coverage lane (kcov, macOS) panicked
+`reached unreachable code` in `proto/Error.zig`'s `parse` whenever a statement
+inside an explicit transaction failed (a trigger `RAISE` in a fault-injection
+test), killing the whole suite. Fast uninstrumented runs of the same tests
+passed.
+
+**Cause.** `Conn.peekForError()` receives a slice borrowed from the reader's
+buffer. When the `ErrorResponse` is the last buffered message,
+`Reader.buffered()` resets `pos`/`start` to 0 while the returned slice still
+points into `buf`. `peekForError` then called `readyForQuery()` *before*
+`setErr` duped the payload; when the `ReadyForQuery` frame had not yet arrived,
+the socket read inside `readyForQuery` landed at `buf[0..]` and overwrote the
+peeked bytes. The first error-field byte became the `Z` frame's
+transaction-state byte (`'I'`/`'T'`/`'E'`) — no valid field code — and
+`parse`'s exhaustive switch hit `unreachable`. Firing requires the `E` and `Z`
+frames to arrive in separate reads, which slow (instrumented) runs hit
+reliably and fast runs mostly miss.
+
+**Fix.** Reorder: `setErr(data)` — which dupes the payload into
+connection-owned memory — runs before `readyForQuery()`; the stashed
+`error.PG` is returned after `readyForQuery()` succeeds. A `readyForQuery`
+failure still propagates, as before. Pure ordering change, no trade-off.
 
 ## Dependency divergence: `translate-c` is fetched from GitHub, not codeberg
 
@@ -86,4 +112,6 @@ Two consequences worth keeping:
 
 Every commit agentsfleetd consumes gets a tag, `v0.0.0-af.N`, incrementing.
 `af.1` is the original pool-acquire patch; `af.2` the 2026-07-24 upstream merge
-(tagged retroactively — it shipped untagged); `af.3` the translate-c mirror.
+(tagged retroactively — it shipped untagged); `af.3` the translate-c mirror;
+`af.4` the 2026-08-11 upstream merge (`b5a1f25`) plus the `peekForError`
+use-after-reset fix.
