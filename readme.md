@@ -1,3 +1,11 @@
+> [!CAUTION]
+> **This fork is sunset and archived.**
+> [`agentsfleet`](https://github.com/agentsfleet/agentsfleet) has moved to Rust,
+> so this Zig dependency fork is no longer used or maintained. See
+> [github.com/agentsfleet/agentsfleet](https://github.com/agentsfleet/agentsfleet)
+> for current work, or [karlseguin/pg.zig](https://github.com/karlseguin/pg.zig)
+> for the upstream project.
+
 # Native PostgreSQL driver for Zig
 
 A native PostgresSQL driver / client for Zig. Supports [LISTEN](#listen--notify).
